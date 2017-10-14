@@ -1,0 +1,371 @@
+--- a/build/target/product/full_base.mk
++++ b/build/target/product/full_base.mk
+@@ -24,7 +24,7 @@
+     WAPPushManager
+ 
+ # Put en_US first in the list, so make it default.
+-PRODUCT_LOCALES := en_US
++PRODUCT_LOCALES := zh_CN
+ 
+ # Get some sounds
+ $(call inherit-product-if-exists, frameworks/base/data/sounds/AllAudio.mk)
+
+--- a/frameworks/base/core/jni/com_android_internal_os_Zygote.cpp
++++ b/frameworks/base/core/jni/com_android_internal_os_Zygote.cpp
+@@ -16,7 +16,6 @@
+ 
+ #define LOG_TAG "Zygote"
+ 
+-#include <sstream>
+ 
+ // sys/mount.h has to come before linux/fs.h due to redefinition of MS_RDONLY, MS_BIND, etc
+ #include <sys/mount.h>
+@@ -55,7 +54,7 @@
+ #include "ScopedLocalRef.h"
+ #include "ScopedPrimitiveArray.h"
+ #include "ScopedUtfChars.h"
+-#include "fd_utils-inl.h"
++
+ 
+ #include "nativebridge/native_bridge.h"
+ 
+@@ -81,11 +80,6 @@
+   env->FatalError("RuntimeAbort");
+ }
+ 
+-static void RuntimeAbort(JNIEnv* env, int line, const char* msg) {
+-  std::ostringstream oss;
+-  oss << __FILE__ << ":" << line << ": " << msg;
+-  env->FatalError(oss.str().c_str());
+-}
+ 
+ // This signal handler is for zygote mode, since the zygote must reap its children
+ static void SigChldHandler(int /*signal_number*/) {
+@@ -448,8 +442,6 @@
+ }
+ #endif
+ 
+-// The list of open zygote file descriptors.
+-static FileDescriptorTable* gOpenFdTable = NULL;
+ 
+ // Utility routine to fork zygote and specialize the child process.
+ static pid_t ForkAndSpecializeCommon(JNIEnv* env, uid_t uid, gid_t gid, jintArray javaGids,
+@@ -465,35 +457,6 @@
+   SetForkLoad(true);
+ #endif
+ 
+-  sigset_t sigchld;
+-  sigemptyset(&sigchld);
+-  sigaddset(&sigchld, SIGCHLD);
+-
+-  // Temporarily block SIGCHLD during forks. The SIGCHLD handler might
+-  // log, which would result in the logging FDs we close being reopened.
+-  // This would cause failures because the FDs are not whitelisted.
+-  //
+-  // Note that the zygote process is single threaded at this point.
+-  if (sigprocmask(SIG_BLOCK, &sigchld, NULL) == -1) {
+-    ALOGE("sigprocmask(SIG_SETMASK, { SIGCHLD }) failed: %s", strerror(errno));
+-    RuntimeAbort(env, __LINE__, "Call to sigprocmask(SIG_BLOCK, { SIGCHLD }) failed.");
+-  }
+-
+-  // Close any logging related FDs before we start evaluating the list of
+-  // file descriptors.
+-  __android_log_close();
+-
+-  // If this is the first fork for this zygote, create the open FD table.
+-  // If it isn't, we just need to check whether the list of open files has
+-  // changed (and it shouldn't in the normal case).
+-  if (gOpenFdTable == NULL) {
+-    gOpenFdTable = FileDescriptorTable::Create();
+-    if (gOpenFdTable == NULL) {
+-      RuntimeAbort(env, __LINE__, "Unable to construct file descriptor table.");
+-    }
+-  } else if (!gOpenFdTable->Restat()) {
+-    RuntimeAbort(env, __LINE__, "Unable to restat file descriptor table.");
+-  }
+ 
+   pid_t pid = fork();
+ 
+@@ -504,16 +467,6 @@
+     // Clean up any descriptors which must be closed immediately
+     DetachDescriptors(env, fdsToClose);
+ 
+-    // Re-open all remaining open file descriptors so that they aren't shared
+-    // with the zygote across a fork.
+-    if (!gOpenFdTable->ReopenOrDetach()) {
+-      RuntimeAbort(env, __LINE__, "Unable to reopen whitelisted descriptors.");
+-    }
+-
+-    if (sigprocmask(SIG_UNBLOCK, &sigchld, NULL) == -1) {
+-      ALOGE("sigprocmask(SIG_SETMASK, { SIGCHLD }) failed: %s", strerror(errno));
+-      RuntimeAbort(env, __LINE__, "Call to sigprocmask(SIG_UNBLOCK, { SIGCHLD }) failed.");
+-    }
+ 
+     // Keep capabilities across UID change, unless we're staying root.
+     if (uid != 0) {
+@@ -647,11 +600,11 @@
+   } else if (pid > 0) {
+     // the parent process
+ 
+-    // We blocked SIGCHLD prior to a fork, we unblock it here.
+-    if (sigprocmask(SIG_UNBLOCK, &sigchld, NULL) == -1) {
+-      ALOGE("sigprocmask(SIG_SETMASK, { SIGCHLD }) failed: %s", strerror(errno));
+-      RuntimeAbort(env, __LINE__, "Call to sigprocmask(SIG_UNBLOCK, { SIGCHLD }) failed.");
+-    }
++#ifdef ENABLE_SCHED_BOOST
++    // unset scheduler knob
++    SetForkLoad(false);
++#endif
++
+   }
+   return pid;
+ }
+
+--- a/frameworks/base/packages/SettingsProvider/res/values/defaults.xml
++++ b/frameworks/base/packages/SettingsProvider/res/values/defaults.xml
+@@ -227,4 +227,5 @@
+ 
+     <!-- Default for Settings.Global.CAPTIVE_PORTAL_DETECTION_ENABLED -->
+     <integer name="def_captive_portal_detection_enabled" translatable="false">1</integer>
++    <string name="def_captive_portal_server">www.google.cn</string>
+ </resources>
+
+--- a/frameworks/base/packages/SettingsProvider/src/com/android/providers/settings/DatabaseHelper.java
++++ b/frameworks/base/packages/SettingsProvider/src/com/android/providers/settings/DatabaseHelper.java
+@@ -2990,6 +2990,8 @@
+              */
+             loadIntegerSetting(stmt, Settings.Global.CAPTIVE_PORTAL_DETECTION_ENABLED,
+                     R.integer.def_captive_portal_detection_enabled);
++            loadStringSetting(stmt, Settings.Global.CAPTIVE_PORTAL_SERVER,
++                    R.string.def_captive_portal_server);
+         } finally {
+             if (stmt != null) stmt.close();
+         }
+
+--- a/system/core/rootdir/init.rc
++++ b/system/core/rootdir/init.rc
+@@ -58,6 +58,8 @@
+     mkdir /data 0771 system system
+     mkdir /cache 0770 system cache
+     mkdir /config 0500 root root
++    mkdir /efs 0771 system radio
++    mkdir /efs_gsm 0771 system radio
+ 
+     # Mount staging areas for devices managed by vold
+     # See storage config details at http://source.android.com/tech/storage/
+@@ -328,7 +330,7 @@
+     mkdir /data/misc/gatekeeper 0700 system system
+     mkdir /data/misc/keychain 0771 system system
+     mkdir /data/misc/net 0750 root shell
+-    mkdir /data/misc/radio 0770 system radio
++    mkdir /data/misc/radio 0771 system radio
+     mkdir /data/misc/sms 0770 system radio
+     mkdir /data/misc/zoneinfo 0775 system system
+     mkdir /data/misc/vpn 0770 system vpn
+@@ -405,6 +407,8 @@
+     restorecon /data/data
+     restorecon /data/user
+     restorecon /data/user/0
++    restorecon -R /efs
++    restorecon -R /efs_gsm
+ 
+     # Check any timezone data in /data is newer than the copy in /system, delete if not.
+     exec - system system -- /system/bin/tzdatacheck /system/usr/share/zoneinfo /data/misc/zoneinfo
+@@ -437,6 +441,9 @@
+     # Tweak background writeout
+     write /proc/sys/vm/dirty_expire_centisecs 200
+     write /proc/sys/vm/dirty_background_ratio  5
++ # for Radio
++    chmod 0777 /sys/devices/platform/i2c-gpio.20/i2c-20/20-0008/mode
++    chmod 0777 /sys/devices/platform/s5p-ehci/power/control
+ 
+     # Permissions for System Server and daemons.
+     chown radio system /sys/android_power/state
+@@ -445,6 +452,21 @@
+     chown radio system /sys/android_power/acquire_partial_wake_lock
+     chown radio system /sys/android_power/release_wake_lock
+     chown system system /sys/power/autosleep
++
++
++    # Switch Device
++    chown system radio /sys/class/sec/switch/usb_sel
++    chown system radio /sys/class/sec/switch/uart_sel
++    chown system radio /sys/class/sec/switch/otg_test
++    chown system radio /sys/class/sec/switch/apo_factory
++
++
++
++    # GPIO DVS
++    chown radio system /sys/class/secgpio_check/secgpio_check_all/gpioinit_check
++    chown radio system /sys/class/secgpio_check/secgpio_check_all/gpiosleep_check
++    chown radio system /sys/class/secgpio_check/secgpio_check_all/checked_sleepGPIO
++
+     chown system system /sys/power/state
+     chown system system /sys/power/wakeup_count
+     chown radio system /sys/power/wake_lock
+@@ -653,13 +675,19 @@
+     class main
+     writepid /dev/cpuset/system-background/tasks
+ 
+-service ril-daemon /system/bin/rild
++service ril-daemon /system/bin/rild -l /system/lib/libsec-ril-cdma.so -- -d /dev/ttyS0 -D 7203 -M no
+     class main
+     socket rild stream 660 root radio
+-    socket sap_uim_socket1 stream 660 bluetooth bluetooth
+     socket rild-debug stream 660 radio system
+     user root
+-    group radio cache inet misc audio log qcom_diag
++    group radio cache inet misc audio sdcard_r sdcard_rw log
++
++service ril-daemon2 /system/bin/rild -c 2 -- -d /dev/ttyS1 -D 7204
++    class main
++    socket rild2 stream 660 root radio
++    socket rild-debug2 stream 660 radio system
++    user root
++    group radio cache inet misc audio sdcard_r sdcard_rw log qcom_oncrpc diag graphics
+ 
+ service surfaceflinger /system/bin/surfaceflinger
+     class core
+
+--- a/system/core/rootdir/ueventd.rc
++++ b/system/core/rootdir/ueventd.rc
+@@ -12,6 +12,8 @@
+ /dev/hw_random            0440   root       system
+ /dev/ashmem               0666   root       root
+ /dev/binder               0666   root       root
++/dev/hidraw1              0664   root       system
++/dev/ovr*                 0664   root       system
+ 
+ # Anyone can read the logs, but if they're not in the "logs"
+ # group, then they'll only see log entries for their UID.
+@@ -28,7 +30,7 @@
+ /dev/dri/*                0666   root       graphics
+ 
+ # these should not be world writable
+-/dev/diag                 0660   system     qcom_diag
++/dev/diag                 0660   radio      radio
+ /dev/diag_arm9            0660   radio      radio
+ /dev/android_adb          0660   adb        adb
+ /dev/android_adb_enable   0660   adb        adb
+@@ -98,4 +100,7 @@
+ 
+ # DVB API device nodes
+ /dev/dvb*                 0660   root       system
++/dev/mobicore             0700   system     system
++/dev/mobicore-user        0666   radio     system
+ 
++
+
+--- a/system/vold/Utils.cpp
++++ b/system/vold/Utils.cpp
+@@ -282,15 +282,18 @@
+         }
+     }
+ 
+-    if (setexeccon(context)) {
++/*  if (setexeccon(context)) {
+         LOG(ERROR) << "Failed to setexeccon";
+         abort();
+     }
++*/
+     status_t res = android_fork_execvp(argc, argv, NULL, false, true);
++/*
+     if (setexeccon(nullptr)) {
+         LOG(ERROR) << "Failed to setexeccon";
+         abort();
+     }
++*/
+ 
+     free(argv);
+     return res;
+@@ -314,16 +317,18 @@
+     }
+     output.clear();
+ 
+-    if (setexeccon(context)) {
++   /* if (setexeccon(context)) {
+         LOG(ERROR) << "Failed to setexeccon";
+         abort();
+     }
++*/
+     FILE* fp = popen(cmd.c_str(), "r");
++/*
+     if (setexeccon(nullptr)) {
+         LOG(ERROR) << "Failed to setexeccon";
+         abort();
+     }
+-
++*/
+     if (!fp) {
+         PLOG(ERROR) << "Failed to popen " << cmd;
+         return -errno;
+
+--- a/packages/apps/Trebuchet/res/xml/default_workspace_4x4.xml
++++ b/packages/apps/Trebuchet/res/xml/default_workspace_4x4.xml
+@@ -208,11 +208,11 @@
+             launcher:packageName="com.cyngn.cameranext"
+             launcher:className="com.android.camera.CameraLauncher" />
+         <favorite
++            launcher:packageName="com.android.camera2"
++            launcher:className="com.android.camera.CameraLauncher" />
++        <favorite
+             launcher:packageName="org.cyanogenmod.snap"
+             launcher:className="com.android.camera.CameraLauncher" />
+-        <favorite
+-            launcher:packageName="com.android.camera2"
+-            launcher:className="com.android.camera.CameraLauncher" />
+     </resolve>
+ 
+ </favorites>
+
+--- a/packages/apps/Trebuchet/res/xml/default_workspace_5x5.xml
++++ b/packages/apps/Trebuchet/res/xml/default_workspace_5x5.xml
+@@ -208,11 +208,11 @@
+             launcher:packageName="com.cyngn.cameranext"
+             launcher:className="com.android.camera.CameraLauncher" />
+         <favorite
++            launcher:packageName="com.android.camera2"
++            launcher:className="com.android.camera.CameraLauncher" />
++        <favorite
+             launcher:packageName="org.cyanogenmod.snap"
+             launcher:className="com.android.camera.CameraLauncher" />
+-        <favorite
+-            launcher:packageName="com.android.camera2"
+-            launcher:className="com.android.camera.CameraLauncher" />
+     </resolve>
+ 
+ </favorites>
+
+--- a/packages/apps/Trebuchet/res/xml/default_workspace_5x6.xml
++++ b/packages/apps/Trebuchet/res/xml/default_workspace_5x6.xml
+@@ -208,11 +208,11 @@
+             launcher:packageName="com.cyngn.cameranext"
+             launcher:className="com.android.camera.CameraLauncher" />
+         <favorite
++            launcher:packageName="com.android.camera2"
++            launcher:className="com.android.camera.CameraLauncher" />
++        <favorite
+             launcher:packageName="org.cyanogenmod.snap"
+             launcher:className="com.android.camera.CameraLauncher" />
+-        <favorite
+-            launcher:packageName="com.android.camera2"
+-            launcher:className="com.android.camera.CameraLauncher" />
+     </resolve>
+ 
+ </favorites>
+
+--- a/packages/apps/Trebuchet/src/com/android/launcher3/LauncherProvider.java
++++ b/packages/apps/Trebuchet/src/com/android/launcher3/LauncherProvider.java
+@@ -825,10 +825,10 @@
+                     migrateLauncherFavorite(db, "com.android.mms", "com.android.messaging",
+                             "com.android.mms.ui.ConversationList",
+                             "com.android.messaging.ui.conversationlist.ConversationListActivity");
+-                    migrateLauncherFavorite(db, "com.android.camera2", "org.cyanogenmod.snap",
++                    migrateLauncherFavorite(db, "org.cyanogenmod.snap", "com.android.camera2",
+                             "com.android.camera.CameraLauncher",
+                             "com.android.camera.CameraLauncher");
+-                    migrateLauncherFavorite(db, "org.cyanogenmod.snap", "com.android.camera2",
++                    migrateLauncherFavorite(db, "com.android.camera2", "org.cyanogenmod.snap",
+                             "com.android.camera.CameraLauncher",
+                             "com.android.camera.CameraLauncher");
+                     migrateLauncherFavorite(db, "org.cyanogenmod.gello.browser", "com.android.browser",
