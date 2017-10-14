@@ -1,6 +1,6 @@
 Device configuration for Samsung Galaxy S4 (SCH-I959)
 
-Copyright 2016, The LineageOS Project / GearCM / Pohrom / SPXG
+Copyright 2017, The LineageOS Project / GearCM / Pohrom / SPXG
 
 # device基于SPXG的i959修改
 * 感谢GearCM的device
