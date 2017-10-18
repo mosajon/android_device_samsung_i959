@@ -11,4 +11,4 @@ Copyright 2017, The LineageOS Project / GearCM / Pohrom / SPXG
 * lineageos13编译需要openjdk8
 
 # 存在问题
-* 红外遥控不可用(consumerir)
+* 
