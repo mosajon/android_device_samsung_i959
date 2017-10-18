@@ -1,4 +1,4 @@
-# Copyright (C) 2015, The CyanogenMod Project <http://www.cyanogenmod.org>
+# Copyright (C) 2014 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# HAL module implementation stored in
+# hw/<POWERS_HARDWARE_MODULE_ID>.<ro.hardware>.so
+
 LOCAL_PATH := $(call my-dir)
 
 include $(CLEAR_VARS)
@@ -21,5 +24,9 @@ LOCAL_MODULE_PATH := $(TARGET_OUT_SHARED_LIBRARIES)/hw
 LOCAL_SRC_FILES := consumerir.c
 LOCAL_SHARED_LIBRARIES := liblog libcutils
 LOCAL_MODULE_TAGS := optional
+
+ifeq ($(IR_HAS_ONE_FREQ_RANGE),true)
+LOCAL_CFLAGS := -DUSE_ONE_FREQ_RANGE
+endif
 
 include $(BUILD_SHARED_LIBRARY)
